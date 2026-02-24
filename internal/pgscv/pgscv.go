@@ -19,6 +19,7 @@ import (
 	"github.com/cherts/pgscv/internal/log"
 	"github.com/cherts/pgscv/internal/model"
 	"github.com/cherts/pgscv/internal/service"
+	"github.com/cherts/pgscv/internal/tunnel"
 )
 
 const pgSCVSubscriber = "pgscv_subscriber"
@@ -33,6 +34,11 @@ func Start(ctx context.Context, config *Config) error {
 	log.Debug("start application")
 
 	serviceRepo := service.NewRepository()
+
+	// Initialize tunnel manager for SSH tunnels
+	tunnelManager := tunnel.NewManager(ctx)
+	serviceRepo.SetTunnelManager(tunnelManager)
+
 	constLabels := make(map[string]*map[string]string)
 
 	serviceConfig := service.Config{
@@ -138,10 +144,18 @@ func Start(ctx context.Context, config *Config) error {
 			log.Info("exit signaled, stop application")
 			cancel()
 			wg.Wait()
+			// Close all SSH tunnels
+			if err := serviceRepo.CloseTunnels(); err != nil {
+				log.Warnf("error closing SSH tunnels: %s", err)
+			}
 			return nil
 		case e := <-errCh:
 			cancel()
 			wg.Wait()
+			// Close all SSH tunnels
+			if err := serviceRepo.CloseTunnels(); err != nil {
+				log.Warnf("error closing SSH tunnels: %s", err)
+			}
 			return e
 		}
 	}

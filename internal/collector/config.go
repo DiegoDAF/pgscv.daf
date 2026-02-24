@@ -86,7 +86,7 @@ type PostgresVersion struct {
 	IsPGPRO     bool // Postgres Professional
 }
 
-func newPostgresServiceConfig(ctx context.Context, connStr string, connTimeout int) (postgresServiceConfig, error) {
+func newPostgresServiceConfig(ctx context.Context, connStr string, connTimeout int, existingDB *store.DB) (postgresServiceConfig, error) {
 	var config = postgresServiceConfig{}
 
 	// Return empty config if empty connection string.
@@ -98,18 +98,25 @@ func newPostgresServiceConfig(ctx context.Context, connStr string, connTimeout i
 	if err != nil {
 		return config, err
 	}
-	if connTimeout > 0 {
-		pgconfig.ConnConfig.ConnectTimeout = time.Duration(connTimeout) * time.Second
-	}
 
-	// Determine is service running locally.
+	// Determine is service running locally based on original connection string host.
 	config.localService = isAddressLocal(pgconfig.ConnConfig.Host)
 
-	conn, err := store.NewWithConfig(pgconfig)
-	if err != nil {
-		return config, err
+	// Reuse existing DB connection when available (e.g. SSH tunnel rewrites host/port
+	// in the pool config but the original connStr still points to the remote host).
+	var conn *store.DB
+	if existingDB != nil {
+		conn = existingDB
+	} else {
+		if connTimeout > 0 {
+			pgconfig.ConnConfig.ConnectTimeout = time.Duration(connTimeout) * time.Second
+		}
+		conn, err = store.NewWithConfig(pgconfig)
+		if err != nil {
+			return config, err
+		}
+		defer conn.Close()
 	}
-	defer conn.Close()
 
 	var setting string
 
@@ -238,7 +245,7 @@ func newPostgresServiceConfig(ctx context.Context, connStr string, connTimeout i
 // FillPostgresServiceConfig defines new config for Postgres-based collectors.
 func (cfg *Config) FillPostgresServiceConfig(ctx context.Context, connTimeout int) error {
 	var err error
-	cfg.postgresServiceConfig, err = newPostgresServiceConfig(ctx, cfg.ConnString, connTimeout)
+	cfg.postgresServiceConfig, err = newPostgresServiceConfig(ctx, cfg.ConnString, connTimeout, cfg.DB)
 	return err
 }
 

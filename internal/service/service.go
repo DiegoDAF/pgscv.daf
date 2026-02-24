@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/cherts/pgscv/internal/cache"
 	"github.com/cherts/pgscv/internal/registry"
+	"github.com/cherts/pgscv/internal/tunnel"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"strings"
 	"sync"
@@ -79,9 +80,10 @@ type Collector interface {
 
 // Repository is the repository with services.
 type Repository struct {
-	sync.RWMutex                    // protect concurrent access
-	Services     map[string]Service // service repo store
-	Registries   map[string]*registry.Registry
+	sync.RWMutex                         // protect concurrent access
+	Services      map[string]Service     // service repo store
+	Registries    map[string]*registry.Registry
+	TunnelManager *tunnel.Manager        // SSH tunnel manager
 }
 
 // NewRepository creates new services repository.
@@ -90,6 +92,19 @@ func NewRepository() *Repository {
 		Services:   make(map[string]Service),
 		Registries: make(map[string]*registry.Registry),
 	}
+}
+
+// SetTunnelManager sets the tunnel manager for the repository.
+func (repo *Repository) SetTunnelManager(tm *tunnel.Manager) {
+	repo.TunnelManager = tm
+}
+
+// CloseTunnels closes all SSH tunnels managed by this repository.
+func (repo *Repository) CloseTunnels() error {
+	if repo.TunnelManager != nil {
+		return repo.TunnelManager.CloseAll()
+	}
+	return nil
 }
 
 /* Public wrapper-methods of Repository */
@@ -198,6 +213,12 @@ func (repo *Repository) addServicesFromConfig(config Config) {
 			defer wg.Done()
 			var msg string
 			var db *store.DB
+
+			if err := cs.ResolveConninfo(); err != nil {
+				log.Warnf("service [%s]: %s, skip", k, err)
+				return
+			}
+
 			if cs.ServiceType == model.ServiceTypePatroni {
 				err := attemptRequest(cs.BaseURL)
 				if err != nil {
@@ -218,6 +239,27 @@ func (repo *Repository) addServicesFromConfig(config Config) {
 					log.Warnf("%s: %s, skip", cs.Conninfo, err)
 					return
 				}
+
+				// If SSH tunnel is configured, establish it and rewrite host/port
+				if cs.SSHTunnel != nil && repo.TunnelManager != nil {
+					remoteHost := pgconfig.ConnConfig.Host
+					remotePort := int(pgconfig.ConnConfig.Port)
+					tun, err := repo.TunnelManager.GetOrCreate(k, *cs.SSHTunnel, remoteHost, remotePort)
+					if err != nil {
+						if config.SkipConnErrorMode {
+							log.Warnf("SSH tunnel for service %s failed: %s", k, err)
+						} else {
+							log.Warnf("SSH tunnel for service %s failed: %s, skip", k, err)
+							return
+						}
+					} else {
+						// Rewrite connection to use local tunnel endpoint
+						pgconfig.ConnConfig.Host = "127.0.0.1"
+						pgconfig.ConnConfig.Port = tun.LocalPort()
+						log.Infof("service [%s] using SSH tunnel: %s -> %s:%d", k, tun.LocalAddr(), remoteHost, remotePort)
+					}
+				}
+
 				if config.ConnTimeout > 0 {
 					pgconfig.ConnConfig.ConnectTimeout = time.Duration(config.ConnTimeout) * time.Second
 				}

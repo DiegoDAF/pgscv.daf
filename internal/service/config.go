@@ -3,9 +3,12 @@ package service
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
+	"github.com/cherts/pgscv/internal/log"
 	"github.com/cherts/pgscv/internal/model"
+	"github.com/cherts/pgscv/internal/tunnel"
 )
 
 // Label struct describe targets labels
@@ -21,10 +24,28 @@ type ConnSetting struct {
 	ServiceType string `yaml:"service_type"`
 	// Conninfo is the connection string in service-specific format.
 	Conninfo string `yaml:"conninfo"`
+	// ConninfoFile is a path to a file containing the connection string (alternative to Conninfo).
+	ConninfoFile string `yaml:"conninfo_file"`
 	// BaseURL is the base URL for connecting to HTTP services.
 	BaseURL string `yaml:"baseurl"`
-	//TargetLabels array of labels for /targets endpoint
+	// TargetLabels array of labels for /targets endpoint
 	TargetLabels *[]Label `yaml:"target_labels"`
+	// SSHTunnel is the SSH tunnel configuration for this service (optional).
+	SSHTunnel *tunnel.SSHTunnelConfig `yaml:"ssh_tunnel"`
+}
+
+// ResolveConninfo reads the connection string from ConninfoFile if set, falling back to Conninfo.
+func (cs *ConnSetting) ResolveConninfo() error {
+	if cs.ConninfoFile == "" {
+		return nil
+	}
+	data, err := os.ReadFile(cs.ConninfoFile)
+	if err != nil {
+		return fmt.Errorf("failed to read conninfo_file %s: %w", cs.ConninfoFile, err)
+	}
+	cs.Conninfo = strings.TrimSpace(string(data))
+	log.Infof("conninfo loaded from file %s", cs.ConninfoFile)
+	return nil
 }
 
 // ConnsSettings defines a set of all connection settings of exact services.
