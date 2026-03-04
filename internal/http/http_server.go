@@ -76,7 +76,7 @@ func NewServer(cfg ServerConfig,
 			Handler:      mux,
 			IdleTimeout:  10 * time.Second,
 			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 30 * time.Second,
+			WriteTimeout: 120 * time.Second,
 		},
 	}
 }
