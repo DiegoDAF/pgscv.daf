@@ -29,6 +29,64 @@ This project is a continuation of the development of the original pgSCV by [Alex
 - **Collectors filters**. Collectors could be adjusted to skip collecting metrics based on labels values, like
   block devices, network interfaces, filesystems, users, databases, etc.
 
+### SSH Tunnel Support (pgscv.daf fork only)
+
+This fork adds built-in SSH tunnel support, allowing pgscv to monitor PostgreSQL instances
+that are only reachable through a bastion/jump host. The tunnel is established automatically
+and transparently — pgscv rewrites the connection to use the local tunnel endpoint.
+
+Add an `ssh_tunnel` block to any service in the YAML config:
+
+```yaml
+services:
+  "my-db:5432":
+    service_type: "postgres"
+    conninfo_file: "/run/secrets/my-db.conn"
+    ssh_tunnel:
+      host: bastion.example.com        # SSH server (bastion/jump host)
+      port: 22                          # SSH port (default: 22)
+      user: admin                       # SSH username
+      private_key: "/run/secrets/ssh_key"  # Path to private key file
+      # private_key_passphrase: ""      # Optional: passphrase for encrypted keys
+      # password: ""                    # Alternative to private_key
+      # known_hosts_file: ""            # Optional: path to known_hosts (skip verification if empty)
+      # keepalive_seconds: 30           # SSH keepalive interval (default: 30)
+```
+
+#### Secrets management with Docker
+
+Both the connection string and the SSH private key should be mounted as read-only volumes
+into `/run/secrets/` — never hardcode credentials in the config file.
+
+In your Docker Compose service definition:
+```yaml
+services:
+  pgscv-my-db:
+    image: pgscv-daf:latest
+    volumes:
+      - ./config/pgscv-my-db.yaml:/etc/pgscv.yaml:ro
+      - ./secrets/my-db.conn:/run/secrets/my-db.conn:ro         # connection string
+      - /path/to/ssh_key:/run/secrets/ssh_key:ro                 # SSH private key
+    command: ["--config-file=/etc/pgscv.yaml"]
+    network_mode: host
+```
+
+The `.conn` file contains a standard PostgreSQL connection string:
+```
+postgres://user:password@db-host:5432/postgres?sslmode=require
+```
+
+#### How it works
+
+1. pgscv reads the connection string from the mounted `.conn` file (`conninfo_file`)
+2. Opens an SSH connection to the bastion host using the mounted private key
+3. Creates a local listener on a random port (`127.0.0.1:<random>`)
+4. Rewrites the `host:port` from the connection string to the local tunnel endpoint
+5. All traffic flows transparently: `pgscv -> bastion -> db-host:5432`
+6. Keepalive messages prevent the SSH connection from timing out
+
+**Authentication:** Supports private key (with optional passphrase) or password. Private key is recommended.
+
 ### Requirements
 - Can run on Linux only; can connect to remote services running on other OS/PaaS.
 - Requisites for connecting to the services, such as login and password.
