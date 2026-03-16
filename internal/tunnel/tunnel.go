@@ -155,7 +155,8 @@ func (t *Tunnel) forward(localConn net.Conn) {
 	// Dial remote through SSH
 	remoteConn, err := t.sshClient.Dial("tcp", remoteAddr)
 	if err != nil {
-		log.Warnf("tunnel failed to dial remote %s: %v", remoteAddr, err)
+		log.Warnf("tunnel failed to dial remote %s: %v, marking inactive", remoteAddr, err)
+		t.markInactive()
 		return
 	}
 	defer remoteConn.Close()
@@ -180,9 +181,15 @@ func (t *Tunnel) forward(localConn net.Conn) {
 }
 
 // keepAlive sends periodic keepalive messages to prevent SSH timeout.
+// After maxKeepaliveFailures consecutive failures, marks the tunnel as inactive
+// so that the next GetOrCreate call will reconnect automatically.
 func (t *Tunnel) keepAlive() {
+	const maxKeepaliveFailures = 3
+
 	ticker := time.NewTicker(time.Duration(t.config.KeepAliveSeconds) * time.Second)
 	defer ticker.Stop()
+
+	failures := 0
 
 	for {
 		select {
@@ -191,11 +198,25 @@ func (t *Tunnel) keepAlive() {
 		case <-ticker.C:
 			_, _, err := t.sshClient.SendRequest("keepalive@openssh.com", true, nil)
 			if err != nil {
-				log.Warnf("SSH keepalive failed: %v", err)
-				// Connection may be dead, but let the next actual use fail
+				failures++
+				log.Warnf("SSH keepalive failed (%d/%d): %v", failures, maxKeepaliveFailures, err)
+				if failures >= maxKeepaliveFailures {
+					log.Warnf("SSH tunnel to %s dead after %d keepalive failures, marking inactive", t.config.Addr(), failures)
+					t.markInactive()
+					return
+				}
+			} else {
+				failures = 0
 			}
 		}
 	}
+}
+
+// markInactive marks the tunnel as dead so GetOrCreate will reconnect on next scrape.
+func (t *Tunnel) markInactive() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.active = false
 }
 
 // Close stops the tunnel and releases resources.
